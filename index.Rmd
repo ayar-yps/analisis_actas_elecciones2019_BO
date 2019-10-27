@@ -8,10 +8,14 @@ text-align: justify}
 
 Este sitio muestra análisis de datos sobre las actas de las elecciones nacionales 2019 en Bolivia. Los datos fuente considerados provienen de las páginas web oficiales del Organo Electoral Plurinacional y fueron proporcionados por el equipo de [Edgar Villegas](https://twitter.com/edgarinvillegas).
 
-__Nota importante:__
+__NOTA IMPORTANTE:__
 
 > Me abstengo de realizar cualquier tipo de interpretación de los resultados por la actual coyuntura en el país. Dejo esta tarea a los lectores a fin de que puedan tomar sus propias conclusiones.
 
+__Código fuente:__
+
+* El código fuente del proyecto esta disponible en [__GitHub__](https://github.com/ayar-yps/analisis_actas_elecciones2019_BO).
+
 __Contacto:__
 
-Cualquier observación a los análisis o inquietud sobre otros comportamientos que se podrían analizar favor enviar al siguiente correo: ayar.paco@gmail.com
+* Cualquier observación a los análisis o inquietud sobre otros comportamientos que se podrían analizar favor enviar al siguiente correo: ayar.paco@gmail.com

@@ -12,6 +12,8 @@ navbar:
       href: http://github.com/ayar-yps/analisis_actas_elecciones2019_BO
     - icon: fa-twitter fa-lg
       href: https://twitter.com/ayar_paco
+    - icon: fa-facebook fa-lg
+      href: https://www.facebook.com/AyarPaco/
 output:
   html_document:
     theme: flatly
