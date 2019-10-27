@@ -1,0 +1,12 @@
+---
+title: "CATÁLOGO"
+---
+<style>
+body {
+text-align: justify}
+</style>
+
+A continuación el listado de análisis realizados a la fecha.
+
+* [Análisis 1](analisis_actas.nb.html): Análisis de diferencias entre datos de actas del TREP y el cómputo oficial. Se toman dos comparaciones: _TREP crítico vs último oficial_ y _Último TREP vs último oficial_
+

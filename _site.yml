@@ -1,0 +1,17 @@
+name: "Elecciones Nacionales 2019"
+output_dir: "."
+navbar:
+  title: "Elecciones Nacionales 2019"
+  left:
+    - text: "Inicio"
+      href: index.html
+    - text: "Catálogo"
+      href: catalogo.html
+  right:
+    - icon: fa-github fa-lg
+      href: http://github.com/ayar-yps
+    - icon: fa-twitter fa-lg
+      href: https://twitter.com/ayar_paco
+output:
+  html_document:
+    theme: flatly

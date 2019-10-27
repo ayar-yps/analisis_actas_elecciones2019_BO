@@ -1,0 +1,1192 @@
+---
+title: 'Análisis de actas: Elecciones nacionales 2019'
+output:
+  html_notebook:
+    number_sections: yes
+    theme: flatly
+    toc: yes
+    toc_float: yes
+---
+
+> [__VOLVER AL CATÁLOGO__](catalogo.html)
+
+```{r include=FALSE}
+# Setup
+
+# Packs
+library(readxl)
+library(dplyr)
+library(RSQLite)
+library(ggplot2)
+library(reshape2)
+library(gridExtra)
+
+# Chunks setup
+knitr::opts_chunk$set(echo=FALSE)
+options(crayon.enable=FALSE)
+
+# Read data
+con <- dbConnect(drv=RSQLite::SQLite(), dbname="data/DatosActasPorHora.db")
+
+actas_presidente_comp_raw <- dbReadTable(con, "ActasPresidenteComputo")
+actas_presidente_trep_raw <- dbReadTable(con, "ActasPresidenteTrep")
+```
+
+# Análisis exploratorio 
+
+## Base de datos en bruto {.tabset}
+
+### Trep {-}
+
+```{r}
+actas_presidente_trep_raw %>% glimpse()
+```
+
+### Computo {-}
+
+```{r}
+actas_presidente_comp_raw %>% glimpse()
+```
+
+## Datos de análisis {.tabset}
+
+```{r}
+gen_analytics_db <- function(actas_presidente){
+  db <- actas_presidente %>%
+    rename(
+      fecha_hora = FechaHoraArchivo,
+      pais = Pais,
+      n_dep = NumeroDepartamento,
+      provincia = Provincia,
+      n_mun = NumeroMunicipio,
+      municipio = Municipio,
+      localidad = Localidad,
+      recinto = Recinto,
+      n_mesa = NumeroMesa,
+      cod_mesa = CodigoMesa,
+      eleccion = Eleccion,
+      inscritos = Inscritos,
+      v_validos = Validos,
+      blancos = Blancos,
+      nulos = Nulos,
+      estado_acta = Computada,
+      departamento = Departamento
+      ) %>%
+    mutate(
+      fecha_hora = as.POSIXct(fecha_hora, format = "%Y-%m-%d %H:%M:%S"),
+      OTROS = FPV + MTS + UCS + M21F + PDC + MNR + PanBol
+      ) %>%
+    select(
+      fecha_hora,
+      cod_mesa,
+      n_mesa,
+      pais,
+      departamento,
+      provincia,
+      municipio,
+      localidad,
+      recinto,
+      inscritos,
+      MAS,
+      CC,
+      OTROS,
+      blancos,
+      nulos,
+      estado_acta
+      ) %>%
+    arrange(
+      fecha_hora, cod_mesa
+    )
+  return(db)
+}
+```
+
+
+```{r}
+actas_presidente_trep_db <- gen_analytics_db(actas_presidente_trep_raw)
+actas_presidente_comp_db <- gen_analytics_db(actas_presidente_comp_raw)
+```
+
+### Trep {-}
+
+```{r}
+actas_presidente_trep_db %>% glimpse()
+```
+
+### Comp {-}
+
+```{r}
+actas_presidente_comp_db %>% glimpse()
+```
+
+# TREP crítico vs último oficial 
+
+```{r}
+actas_presidente_trep_db_crit <- actas_presidente_trep_db %>%
+  filter(fecha_hora == "2019-10-20 19:40:57")
+
+actas_presidente_comp_db_last <- actas_presidente_comp_db %>%
+  filter(fecha_hora == "2019-10-25 07:20:35")
+```
+
+A continuación se realiza un análisis de diferencias en los votos entre los datos del TREP crítico y los últimos datos del cómputo oficial disponibles en la base de datos.
+
+* ___Fecha y hora TREP crítico:___ 2019-10-20 19:40:57
+* ___Fecha y hora último oficial:___ 2019-10-25 07:20:35
+
+## Calculo de diferencias
+
+```{r}
+actas_join_last_crit <- actas_presidente_comp_db_last %>%
+  select(
+    - fecha_hora
+  ) %>%
+  left_join(
+    actas_presidente_trep_db_crit %>%
+      select(
+        cod_mesa,
+        MAS,
+        CC,
+        OTROS,
+        blancos,
+        nulos
+      ),
+    by = "cod_mesa", suffix = c(".comp",".trep")
+  )
+```
+
+
+```{r}
+actas_join_last_crit_dif <- actas_join_last_crit %>%
+  mutate(
+    d_MAS = MAS.comp - MAS.trep,
+    d_CC = CC.comp - CC.trep,
+    d_OTROS = OTROS.comp - OTROS.trep,
+    d_blancos = blancos.comp - blancos.trep,
+    d_nulos = nulos.comp - nulos.trep
+  ) %>%
+  select(
+    cod_mesa,
+    MAS.comp,CC.comp,OTROS.comp,blancos.comp,nulos.comp,
+    MAS.trep,CC.trep,OTROS.trep,blancos.trep,nulos.trep,
+    d_MAS,d_CC,d_OTROS,d_blancos,d_nulos
+  )
+```
+
+```{r}
+actas_join_last_crit_dif %>% glimpse()
+```
+
+## Datos faltantes
+
+Realizando un conteo de datos faltantes en las columnas de votos por partidos, blancos, nulos y diferencias, tenemos lo siguiente. 
+
+```{r}
+actas_join_last_crit_dif %>% 
+  mutate_at(-1,~ifelse(is.na(.),1,0)) %>%
+  summarise_at(-1,~sum(.)) %>%
+  glimpse()
+```
+
+Luego, dado que los datos faltantes en las diferencias corresponden a faltantes en la base de datos del TREP seguiremos el análisis filtrando todos los faltantes. El extracto de los datos resultantes es el siguiente.
+
+```{r}
+actas_join_last_crit_dif_clean <- actas_join_last_crit_dif %>% na.omit()
+actas_join_last_crit_dif_clean %>% glimpse()
+```
+
+## Actas con diferencias
+
+Ahora mostramos únicamente las actas con cualquier tipo de diferencia. Este conjunto de datos es el que se considera para el resto del análisis.
+
+```{r}
+actas_join_last_crit_dif_clean_filter <- actas_join_last_crit_dif_clean %>%
+  filter(
+    abs(d_MAS)+abs(d_CC)+abs(d_OTROS)+abs(d_blancos)+abs(d_nulos)>0
+  )
+```
+
+```{r}
+actas_join_last_crit_dif_clean_filter.melt <- 
+  melt(
+    actas_join_last_crit_dif_clean_filter %>% select(cod_mesa, starts_with("d_")),
+    id = "cod_mesa",
+    variable.name = "grupo",
+    value.name = "dif"
+  )
+```
+
+```{r}
+actas_join_last_crit_dif_clean_filter %>% select(cod_mesa, starts_with("d_"))
+```
+
+## Conteo de diferencias {.tabset}
+
+A continuación contamos el número de actas con diferncias por cada tipo de voto.
+
+### Todas las diferencias {-}
+
+```{r}
+any_dif_last_crit_sum <- actas_join_last_crit_dif_clean_filter %>%
+  select(starts_with("d_")) %>%
+  mutate_all(~ifelse(abs(.)>0,1,0)) %>%
+  summarise_all(sum)
+
+any_dif_last_crit_sum
+```
+
+```{r fig.height=2, fig.width=5}
+ggplot(any_dif_last_crit_sum %>% melt(value.name="count", id.vars=NULL),
+       aes(x=variable, y=count, fill=variable)) +
+  geom_bar(stat = "identity") +
+  theme(legend.position = "none")
+```
+
+### Dif. Positivas {-}
+
+```{r}
+positive_dif_last_crit_sum <- actas_join_last_crit_dif_clean_filter %>%
+  select(starts_with("d_")) %>%
+  mutate_all(~ifelse(.>0,1,0)) %>%
+  summarise_all(sum)
+
+positive_dif_last_crit_sum
+```
+
+```{r fig.height=2, fig.width=5}
+ggplot(positive_dif_last_crit_sum %>% melt(value.name="count", id.vars=NULL),
+       aes(x=variable, y=count, fill=variable)) +
+  geom_bar(stat = "identity") +
+  theme(legend.position = "none")
+```
+
+### Dif. negativas {-}
+
+```{r}
+negative_dif_last_crit_sum <- actas_join_last_crit_dif_clean_filter %>%
+  select(starts_with("d_")) %>%
+  mutate_all(~ifelse(.<0,1,0)) %>%
+  summarise_all(sum)
+
+negative_dif_last_crit_sum
+```
+
+```{r fig.height=2, fig.width=5}
+ggplot(negative_dif_last_crit_sum %>% melt(value.name="count", id.vars=NULL),
+       aes(x=variable, y=count, fill=variable)) +
+  geom_bar(stat = "identity") +
+  theme(legend.position = "none")
+```
+
+## Análisis estadístico {.tabset}
+
+Ahora realizamos un estadistico tomando dos casos catalogados como sigue:
+
+ * __NO CEROS__ Caso que considerando solo las diferencias distintas de cero por tipo de voto
+ * __TODA DIF.:__ Caso que considera toda la población de actas con diferencias.
+
+### Resumen estadístico {- .tabset}
+
+```{r}
+summary_vectors_no_zeros_last_crit <- list()
+aux_names <-c("d_MAS","d_CC","d_OTROS","d_blancos","d_nulos")
+for(aux in aux_names){
+  summary_vectors_no_zeros_last_crit[[aux]] <- t(
+    actas_join_last_crit_dif_clean_filter %>% 
+      filter(abs(!!sym(aux))>0) %>%
+      select(aux) %>%
+      summarise(
+        n=n(),
+        min = min(!!sym(aux)),
+        q1 = quantile(!!sym(aux),0.25),
+        median = quantile(!!sym(aux),0.50),
+        mean = mean(!!sym(aux)),
+        q3 = quantile(!!sym(aux),0.50),
+        max = max(!!sym(aux)),
+        sd = sd(!!sym(aux)),
+        cv = abs(sd/mean)
+  ))
+}
+
+dif_summary_no_zeros_last_crit <-
+  tibble(stats=c("n","min","q1","median","mean","q3","max","sd","cv"),
+         MAS=summary_vectors_no_zeros_last_crit$d_MAS,
+         CC=summary_vectors_no_zeros_last_crit$d_CC,
+         OTROS=summary_vectors_no_zeros_last_crit$d_OTROS,
+         blancos=summary_vectors_no_zeros_last_crit$d_blancos,
+         nulos=summary_vectors_no_zeros_last_crit$d_nulos)
+```
+
+```{r}
+summary_vectors_all_last_crit <- list()
+aux_names <-c("d_MAS","d_CC","d_OTROS","d_blancos","d_nulos")
+
+for(aux in aux_names){
+  summary_vectors_all_last_crit[[aux]] <- t(
+    actas_join_last_crit_dif_clean_filter %>% 
+      select(aux) %>%
+      summarise(
+        n=n(),
+        min = min(!!sym(aux)),
+        q1 = quantile(!!sym(aux),0.25),
+        median = quantile(!!sym(aux),0.50),
+        mean = mean(!!sym(aux)),
+        q3 = quantile(!!sym(aux),0.50),
+        max = max(!!sym(aux)),
+        sd = sd(!!sym(aux)),
+        cv = abs(sd/mean)
+  ))
+}
+
+dif_summary_all_last_crit <-
+  tibble(stats=c("n","min","q1","median","mean","q3","max","sd","cv"),
+         MAS=summary_vectors_all_last_crit$d_MAS,
+         CC=summary_vectors_all_last_crit$d_CC,
+         OTROS=summary_vectors_all_last_crit$d_OTROS,
+         blancos=summary_vectors_all_last_crit$d_blancos,
+         nulos=summary_vectors_all_last_crit$d_nulos)
+```
+
+#### NO CEROS {-}
+
+```{r}
+dif_summary_no_zeros_last_crit
+```
+
+#### TODA DIF. {-}
+
+```{r}
+dif_summary_all_last_crit
+```
+
+### Diagramas de caja {- .tabset}
+
+#### NO CEROS {-}
+
+```{r fig.height=4.5, fig.width=10}
+grid.arrange(
+ggplot(actas_join_last_crit_dif_clean_filter.melt %>% filter(dif!=0),
+       aes(x="",y=dif,fill=grupo)) + 
+  geom_boxplot() +
+  facet_wrap(.~grupo, nrow = 1) +
+  theme(legend.position = "none"),
+ggplot(actas_join_last_crit_dif_clean_filter.melt %>% filter(dif!=0,abs(dif)<75),
+       aes(x="",y=dif,fill=grupo)) + 
+  geom_boxplot() +
+  facet_wrap(.~grupo, nrow = 1) +
+  theme(legend.position = "none"),
+ncol = 2
+) 
+```
+
+#### TODA DIF. {-}
+
+```{r fig.height=4.5, fig.width=10}
+grid.arrange(
+ggplot(actas_join_last_crit_dif_clean_filter.melt,
+       aes(x="",y=dif,fill=grupo)) + 
+  geom_boxplot() +
+  facet_wrap(.~grupo, nrow = 1) +
+  theme(legend.position = "none"),
+ggplot(actas_join_last_crit_dif_clean_filter.melt %>% filter(abs(dif)<75),
+       aes(x="",y=dif,fill=grupo)) + 
+  geom_boxplot() +
+  facet_wrap(.~grupo, nrow = 1) +
+  theme(legend.position = "none"),
+ncol = 2
+)
+```
+
+### Histogramas {- .tabset}
+
+#### NO CEROS {-}
+
+```{r fig.height=4.5, fig.width=10}
+ggplot(actas_join_last_crit_dif_clean_filter.melt %>% filter(dif!=0,abs(dif)<75),
+       aes(x=dif,fill=grupo)) + 
+  geom_histogram(aes(y = ..density..), bins=30) +
+  geom_line(aes(y = ..density..), stat = 'density', size = 1, colour = "darkblue") +
+  facet_wrap(.~grupo, nrow = 2, scales = "free_y") + 
+  theme(legend.position = "none")
+```
+
+#### TODA DIF. {-}
+
+```{r fig.height=4.5, fig.width=10}
+ggplot(actas_join_last_crit_dif_clean_filter.melt %>% filter(abs(dif)<75),
+       aes(x=dif,fill=grupo)) + 
+  geom_histogram(aes(y = ..density..), bins=30) +
+  geom_line(aes(y = ..density..), stat = 'density', size = 1, colour = "darkblue") +
+  facet_wrap(.~grupo, nrow = 2,scales = "free_y") + 
+  theme(legend.position = "none")
+```
+
+## Análisis de sesgo
+
+```{r}
+dif_sum_last_crit <- tibble(
+  tipo = aux_names,  
+  n_dif = (any_dif_last_crit_sum %>% melt(value.name="count", id.vars=NULL))$count,
+  pos_dif = (positive_dif_last_crit_sum %>% melt(value.name="count", id.vars=NULL))$count,
+  neg_dif = (negative_dif_last_crit_sum %>% melt(value.name="count", id.vars=NULL))$count) %>%
+  mutate(pos_frec = pos_dif/n_dif,
+         neg_frec = neg_dif/n_dif)
+```
+
+### Distribución de signos 
+
+```{r}
+dif_sum_last_crit
+```
+
+```{r fig.height=3, fig.width=10}
+ggplot(dif_sum_last_crit %>% select(tipo,pos_frec,neg_frec) %>%
+         mutate(tipo = factor(tipo, levels=aux_names)) %>%
+         melt(id.var="tipo",variable.name = "signo", value.name="frec"),
+       aes(x=signo,y=frec,fill=tipo)) +
+  geom_bar(stat = "identity") + 
+  facet_wrap(.~tipo, nrow = 1,scales = "free_y") +
+  theme(legend.position = "none")
+```
+
+### Análisis por signo {.tabset}
+
+#### Resumen estadístico {- .tabset}
+
+```{r}
+summary_vectors_positive_last_crit <- list()
+aux_names <-c("d_MAS","d_CC","d_OTROS","d_blancos","d_nulos")
+for(aux in aux_names){
+  summary_vectors_positive_last_crit[[aux]] <- t(
+    actas_join_last_crit_dif_clean_filter %>% 
+      filter(!!sym(aux)>0) %>%
+      select(aux) %>%
+      summarise(
+        n=n(),
+        min = min(!!sym(aux)),
+        q1 = quantile(!!sym(aux),0.25),
+        median = quantile(!!sym(aux),0.50),
+        mean = mean(!!sym(aux)),
+        q3 = quantile(!!sym(aux),0.50),
+        max = max(!!sym(aux)),
+        sd = sd(!!sym(aux)),
+        cv = abs(sd/mean)
+  ))
+}
+
+dif_summary_positive_last_crit<-
+  tibble(stats=c("n","min","q1","median","mean","q3","max","sd","cv"),
+         MAS=summary_vectors_positive_last_crit$d_MAS,
+         CC=summary_vectors_positive_last_crit$d_CC,
+         OTROS=summary_vectors_positive_last_crit$d_OTROS,
+         blancos=summary_vectors_positive_last_crit$d_blancos,
+         nulos=summary_vectors_positive_last_crit$d_nulos)
+```
+
+```{r}
+summary_vectors_negative_last_crit <- list()
+aux_names <-c("d_MAS","d_CC","d_OTROS","d_blancos","d_nulos")
+for(aux in aux_names){
+  summary_vectors_negative_last_crit[[aux]] <- t(
+    actas_join_last_crit_dif_clean_filter %>% 
+      filter(!!sym(aux)<0) %>%
+      select(aux) %>%
+      summarise(
+        n=n(),
+        min = min(!!sym(aux)),
+        q1 = quantile(!!sym(aux),0.25),
+        median = quantile(!!sym(aux),0.50),
+        mean = mean(!!sym(aux)),
+        q3 = quantile(!!sym(aux),0.50),
+        max = max(!!sym(aux)),
+        sd = sd(!!sym(aux)),
+        cv = abs(sd/mean)
+  ))
+}
+
+dif_summary_negative_last_crit <- 
+  tibble(stats=c("n","min","q1","median","mean","q3","max","sd","cv"),
+         MAS=summary_vectors_negative_last_crit$d_MAS,
+         CC=summary_vectors_negative_last_crit$d_CC,
+         OTROS=summary_vectors_negative_last_crit$d_OTROS,
+         blancos=summary_vectors_negative_last_crit$d_blancos,
+         nulos=summary_vectors_negative_last_crit$d_nulos)
+```
+
+##### Dif. Positivas {-}
+
+```{r}
+dif_summary_positive_last_crit
+```
+
+##### Dif. Negativas {-}
+
+```{r}
+dif_summary_negative_last_crit
+```
+
+#### Diagramas de caja {- .tabset}
+
+##### Dif. Positivas {-}
+
+```{r fig.height=4.5, fig.width=10}
+grid.arrange(
+ggplot(actas_join_last_crit_dif_clean_filter.melt %>% filter(dif>0),
+       aes(x="",y=dif,fill=grupo)) + 
+  geom_boxplot() +
+  facet_wrap(.~grupo, nrow = 1) +
+  theme(legend.position = "none"),
+ggplot(actas_join_last_crit_dif_clean_filter.melt %>% filter(dif>0, dif<75),
+       aes(x="",y=dif,fill=grupo)) + 
+  geom_boxplot() +
+  facet_wrap(.~grupo, nrow = 1) +
+  theme(legend.position = "none"),
+ncol = 2
+) 
+```
+
+##### Dif. Negativas {-}
+
+```{r fig.height=4.5, fig.width=10}
+grid.arrange(
+ggplot(actas_join_last_crit_dif_clean_filter.melt %>% filter(dif<0),
+       aes(x="",y=dif,fill=grupo)) + 
+  geom_boxplot() +
+  facet_wrap(.~grupo, nrow = 1) +
+  theme(legend.position = "none"),
+ggplot(actas_join_last_crit_dif_clean_filter.melt %>% filter(dif<0, dif>-75),
+       aes(x="",y=dif,fill=grupo)) + 
+  geom_boxplot() +
+  facet_wrap(.~grupo, nrow = 1) +
+  theme(legend.position = "none"),
+ncol = 2
+)
+```
+
+#### Histogramas {- .tabset}
+
+##### Dif. Positivas {-}
+
+```{r fig.height=4.5, fig.width=10}
+ggplot(actas_join_last_crit_dif_clean_filter.melt %>% filter(dif>0, dif<75),
+       aes(x=dif,fill=grupo)) + 
+  geom_histogram(aes(y = ..density..), bins=30) +
+  geom_line(aes(y = ..density..), stat = 'density', size = 1, colour = "darkblue") +
+  facet_wrap(.~grupo, nrow = 2, scales = "free_y") + 
+  theme(legend.position = "none")
+```
+
+##### Dif. Negativas {-}
+
+```{r fig.height=4.5, fig.width=10}
+ggplot(actas_join_last_crit_dif_clean_filter.melt %>% filter(dif<0, dif>-75),
+       aes(x=dif,fill=grupo)) + 
+  geom_histogram(aes(y = ..density..), bins=30) +
+  geom_line(aes(y = ..density..), stat = 'density', size = 1, colour = "darkblue") +
+  facet_wrap(.~grupo, nrow = 2, scales = "free_y") + 
+  theme(legend.position = "none")
+```
+
+## Impacto de diferencias
+
+A continuación se muestra la sumatoria de las diferencias por tipo de voto.
+
+```{r}
+impact_summary_last_crit <- actas_join_last_crit_dif_clean_filter %>%
+  select(starts_with("d_")) %>%
+  summarise_all(sum)
+impact_summary_last_crit
+```
+
+```{r fig.height=2, fig.width=5}
+ggplot(actas_join_last_crit_dif_clean_filter %>%
+         select(starts_with("d_")) %>%
+         summarise_all(sum) %>% 
+         melt(value.name="count", id.vars=NULL),
+       aes(x=variable, y=count, fill=variable)) +
+  geom_bar(stat = "identity") +
+  theme(legend.position = "none")
+```
+
+## Simulación de escenarios {.tabset}
+
+### Escenario 1 {-}
+
+> Mantener las diferencias totales en los votos de CC y OTROS en los ultimos resultados oficiales y omitir cualquier cambio a los votos del MAS.
+
+```{r}
+actas_presidente_comp_db_last %>%
+  select(MAS, CC, OTROS) %>%
+  summarise_all(sum) %>%
+  melt(value.name="n_oficial", id.vars=NULL) %>%
+  mutate(
+    frec_oficial = n_oficial/sum(n_oficial),
+    sim_delta = c(-impact_summary_last_crit$d_MAS, 0, 0),
+    n_sim = n_oficial + sim_delta,
+    frec_sim = n_sim/sum(n_sim)
+  )
+```
+
+### Escenario 2 {-}
+
+> A nivel de actas, considerar únicamente diferencias negativas para el MAS y OTROS, mientras que para CC considerar únicamente diferencias positivas.
+
+```{r}
+impact_summary_last_crit_sim <- actas_join_last_crit_dif_clean_filter %>%
+  select(starts_with("d_")) %>%
+  mutate(
+    d_MAS = ifelse(d_MAS>0,0,d_MAS),
+    d_CC = ifelse(d_CC>0,d_CC,0),
+    d_OTROS = ifelse(d_OTROS>0,0,d_OTROS)
+  ) %>%
+  summarise_all(sum)
+```
+
+```{r}
+actas_presidente_comp_db_last %>%
+  select(MAS, CC, OTROS) %>%
+  summarise_all(sum) %>%
+  melt(value.name="n_oficial", id.vars=NULL) %>%
+  mutate(
+    frec_oficial = n_oficial/sum(n_oficial),
+    sim_delta = c(impact_summary_last_crit_sim$d_MAS,
+                  impact_summary_last_crit_sim$d_CC,
+                  impact_summary_last_crit_sim$d_OTROS),
+    n_sim = n_oficial + sim_delta,
+    frec_sim = n_sim/sum(n_sim)
+  )
+```
+
+# Último TREP vs último oficial
+
+```{r}
+actas_presidente_trep_db_last <- actas_presidente_trep_db %>%
+  filter(fecha_hora == "2019-10-25 10:13:40")
+
+actas_presidente_comp_db_last <- actas_presidente_comp_db %>%
+  filter(fecha_hora == "2019-10-25 07:20:35")
+```
+
+A continuación se realiza un análisis de diferencias en los votos entre los ultimos datos del TREP y el cómputo oficial disponibles en la base de datos.
+
+* ___Fecha y hora último TREP:___ 2019-10-25 10:13:40
+* ___Fecha y hora último oficial:___ 2019-10-25 07:20:35
+
+## Calculo de diferencias
+
+```{r}
+actas_join_last <- actas_presidente_comp_db_last %>%
+  select(
+    - fecha_hora
+  ) %>%
+  left_join(
+    actas_presidente_trep_db_last %>%
+      select(
+        cod_mesa,
+        MAS,
+        CC,
+        OTROS,
+        blancos,
+        nulos
+      ),
+    by = "cod_mesa", suffix = c(".comp",".trep")
+  )
+```
+
+
+```{r}
+actas_join_last_dif <- actas_join_last %>%
+  mutate(
+    d_MAS = MAS.comp - MAS.trep,
+    d_CC = CC.comp - CC.trep,
+    d_OTROS = OTROS.comp - OTROS.trep,
+    d_blancos = blancos.comp - blancos.trep,
+    d_nulos = nulos.comp - nulos.trep
+  ) %>%
+  select(
+    cod_mesa,
+    MAS.comp,CC.comp,OTROS.comp,blancos.comp,nulos.comp,
+    MAS.trep,CC.trep,OTROS.trep,blancos.trep,nulos.trep,
+    d_MAS,d_CC,d_OTROS,d_blancos,d_nulos
+  )
+```
+
+```{r}
+actas_join_last_dif %>% glimpse()
+```
+
+## Datos faltantes
+
+Realizando un conteo de datos faltantes en las columnas de votos por partidos, blancos, nulos y diferencias, tenemos lo siguiente. 
+
+```{r}
+actas_join_last_dif %>% 
+  mutate_at(-1,~ifelse(is.na(.),1,0)) %>%
+  summarise_at(-1,~sum(.)) %>%
+  glimpse()
+```
+
+Luego, dado que los datos faltantes en las diferencias corresponden a faltantes en la base de datos del TREP seguiremos el análisis filtrando todos los faltantes. El extracto de los datos resultantes es el siguiente.
+
+```{r}
+actas_join_last_dif_clean <- actas_join_last_dif %>% na.omit()
+actas_join_last_dif_clean %>% glimpse()
+```
+
+## Actas con diferencias
+
+Ahora mostramos únicamente las actas con cualquier tipo de diferencia. Este conjunto de datos es el que se considera para el resto del análisis.
+
+```{r}
+actas_join_last_dif_clean_filter <- actas_join_last_dif_clean %>%
+  filter(
+    abs(d_MAS)+abs(d_CC)+abs(d_OTROS)+abs(d_blancos)+abs(d_nulos)>0
+  )
+```
+
+```{r}
+actas_join_last_dif_clean_filter.melt <- 
+  melt(
+    actas_join_last_dif_clean_filter %>% select(cod_mesa, starts_with("d_")),
+    id = "cod_mesa",
+    variable.name = "grupo",
+    value.name = "dif"
+  )
+```
+
+```{r}
+actas_join_last_dif_clean_filter %>% select(cod_mesa, starts_with("d_"))
+```
+
+## Conteo de diferencias {.tabset}
+
+A continuación contamos el número de actas con diferncias por cada tipo de voto.
+
+### Todas las diferencias {-}
+
+```{r}
+any_dif_sum <- actas_join_last_dif_clean_filter %>%
+  select(starts_with("d_")) %>%
+  mutate_all(~ifelse(abs(.)>0,1,0)) %>%
+  summarise_all(sum)
+
+any_dif_sum
+```
+
+```{r fig.height=2, fig.width=5}
+ggplot(any_dif_sum %>% melt(value.name="count", id.vars=NULL),
+       aes(x=variable, y=count, fill=variable)) +
+  geom_bar(stat = "identity") +
+  theme(legend.position = "none")
+```
+
+### Dif. Positivas {-}
+
+```{r}
+positive_dif_sum <- actas_join_last_dif_clean_filter %>%
+  select(starts_with("d_")) %>%
+  mutate_all(~ifelse(.>0,1,0)) %>%
+  summarise_all(sum)
+
+positive_dif_sum
+```
+
+```{r fig.height=2, fig.width=5}
+ggplot(positive_dif_sum %>% melt(value.name="count", id.vars=NULL),
+       aes(x=variable, y=count, fill=variable)) +
+  geom_bar(stat = "identity") +
+  theme(legend.position = "none")
+```
+
+### Dif. negativas {-}
+
+```{r}
+negative_dif_sum <- actas_join_last_dif_clean_filter %>%
+  select(starts_with("d_")) %>%
+  mutate_all(~ifelse(.<0,1,0)) %>%
+  summarise_all(sum)
+
+negative_dif_sum
+```
+
+```{r fig.height=2, fig.width=5}
+ggplot(negative_dif_sum %>% melt(value.name="count", id.vars=NULL),
+       aes(x=variable, y=count, fill=variable)) +
+  geom_bar(stat = "identity") +
+  theme(legend.position = "none")
+```
+
+## Análisis estadístico {.tabset}
+
+Ahora realizamos un estadistico tomando dos casos catalogados como sigue:
+
+ * __NO CEROS__ Caso que considerando solo las diferencias distintas de cero por tipo de voto
+ * __TODA DIF.:__ Caso que considera toda la población de actas con diferencias.
+
+### Resumen estadístico {- .tabset}
+
+```{r}
+summary_vectors_no_zeros <- list()
+aux_names <-c("d_MAS","d_CC","d_OTROS","d_blancos","d_nulos")
+for(aux in aux_names){
+  summary_vectors_no_zeros[[aux]] <- t(
+    actas_join_last_dif_clean_filter %>% 
+      filter(abs(!!sym(aux))>0) %>%
+      select(aux) %>%
+      summarise(
+        n=n(),
+        min = min(!!sym(aux)),
+        q1 = quantile(!!sym(aux),0.25),
+        median = quantile(!!sym(aux),0.50),
+        mean = mean(!!sym(aux)),
+        q3 = quantile(!!sym(aux),0.50),
+        max = max(!!sym(aux)),
+        sd = sd(!!sym(aux)),
+        cv = abs(sd/mean)
+  ))
+}
+
+dif_summary_no_zeros<-tibble(stats=c("n","min","q1","median","mean","q3","max","sd","cv"),
+                             MAS=summary_vectors_no_zeros$d_MAS,
+                             CC=summary_vectors_no_zeros$d_CC,
+                             OTROS=summary_vectors_no_zeros$d_OTROS,
+                             blancos=summary_vectors_no_zeros$d_blancos,
+                             nulos=summary_vectors_no_zeros$d_nulos)
+```
+
+```{r}
+summary_vectors_all <- list()
+aux_names <-c("d_MAS","d_CC","d_OTROS","d_blancos","d_nulos")
+
+for(aux in aux_names){
+  summary_vectors_all[[aux]] <- t(
+    actas_join_last_dif_clean_filter %>% 
+      select(aux) %>%
+      summarise(
+        n=n(),
+        min = min(!!sym(aux)),
+        q1 = quantile(!!sym(aux),0.25),
+        median = quantile(!!sym(aux),0.50),
+        mean = mean(!!sym(aux)),
+        q3 = quantile(!!sym(aux),0.50),
+        max = max(!!sym(aux)),
+        sd = sd(!!sym(aux)),
+        cv = abs(sd/mean)
+  ))
+}
+
+dif_summary_all<-tibble(stats=c("n","min","q1","median","mean","q3","max","sd","cv"),
+                        MAS=summary_vectors_all$d_MAS,
+                        CC=summary_vectors_all$d_CC,
+                        OTROS=summary_vectors_all$d_OTROS,
+                        blancos=summary_vectors_all$d_blancos,
+                        nulos=summary_vectors_all$d_nulos)
+```
+
+#### NO CEROS {-}
+
+```{r}
+dif_summary_no_zeros
+```
+
+#### TODA DIF. {-}
+
+```{r}
+dif_summary_all
+```
+
+### Diagramas de caja {- .tabset}
+
+#### NO CEROS {-}
+
+```{r fig.height=4.5, fig.width=10}
+grid.arrange(
+ggplot(actas_join_last_dif_clean_filter.melt %>% filter(dif!=0),
+       aes(x="",y=dif,fill=grupo)) + 
+  geom_boxplot() +
+  facet_wrap(.~grupo, nrow = 1) +
+  theme(legend.position = "none"),
+ggplot(actas_join_last_dif_clean_filter.melt %>% filter(dif!=0,abs(dif)<75),
+       aes(x="",y=dif,fill=grupo)) + 
+  geom_boxplot() +
+  facet_wrap(.~grupo, nrow = 1) +
+  theme(legend.position = "none"),
+ncol = 2
+) 
+```
+
+#### TODA DIF. {-}
+
+```{r fig.height=4.5, fig.width=10}
+grid.arrange(
+ggplot(actas_join_last_dif_clean_filter.melt,
+       aes(x="",y=dif,fill=grupo)) + 
+  geom_boxplot() +
+  facet_wrap(.~grupo, nrow = 1) +
+  theme(legend.position = "none"),
+ggplot(actas_join_last_dif_clean_filter.melt %>% filter(abs(dif)<75),
+       aes(x="",y=dif,fill=grupo)) + 
+  geom_boxplot() +
+  facet_wrap(.~grupo, nrow = 1) +
+  theme(legend.position = "none"),
+ncol = 2
+)
+```
+
+### Histogramas {- .tabset}
+
+#### NO CEROS {-}
+
+```{r fig.height=4.5, fig.width=10}
+ggplot(actas_join_last_dif_clean_filter.melt %>% filter(dif!=0,abs(dif)<75),
+       aes(x=dif,fill=grupo)) + 
+  geom_histogram(aes(y = ..density..), bins=30) +
+  geom_line(aes(y = ..density..), stat = 'density', size = 1, colour = "darkblue") +
+  facet_wrap(.~grupo, nrow = 2, scales = "free_y") + 
+  theme(legend.position = "none")
+```
+
+#### TODA DIF. {-}
+
+```{r fig.height=4.5, fig.width=10}
+ggplot(actas_join_last_dif_clean_filter.melt %>% filter(abs(dif)<75),
+       aes(x=dif,fill=grupo)) + 
+  geom_histogram(aes(y = ..density..), bins=30) +
+  geom_line(aes(y = ..density..), stat = 'density', size = 1, colour = "darkblue") +
+  facet_wrap(.~grupo, nrow = 2,scales = "free_y") + 
+  theme(legend.position = "none")
+```
+
+## Análisis de sesgo
+
+```{r}
+dif_sum <- tibble(
+  tipo = aux_names,  
+  n_dif = (any_dif_sum %>% melt(value.name="count", id.vars=NULL))$count,
+  pos_dif = (positive_dif_sum %>% melt(value.name="count", id.vars=NULL))$count,
+  neg_dif = (negative_dif_sum %>% melt(value.name="count", id.vars=NULL))$count) %>%
+  mutate(pos_frec = pos_dif/n_dif,
+         neg_frec = neg_dif/n_dif)
+```
+
+### Distribución de signos 
+
+```{r}
+dif_sum
+```
+
+```{r fig.height=3, fig.width=10}
+ggplot(dif_sum %>% select(tipo,pos_frec,neg_frec) %>%
+         mutate(tipo = factor(tipo, levels=aux_names)) %>%
+         melt(id.var="tipo",variable.name = "signo", value.name="frec"),
+       aes(x=signo,y=frec,fill=tipo)) +
+  geom_bar(stat = "identity") + 
+  facet_wrap(.~tipo, nrow = 1,scales = "free_y") +
+  theme(legend.position = "none")
+```
+
+### Análisis por signo {.tabset}
+
+#### Resumen estadístico {- .tabset}
+
+```{r}
+summary_vectors_positive <- list()
+aux_names <-c("d_MAS","d_CC","d_OTROS","d_blancos","d_nulos")
+for(aux in aux_names){
+  summary_vectors_positive[[aux]] <- t(
+    actas_join_last_dif_clean_filter %>% 
+      filter(!!sym(aux)>0) %>%
+      select(aux) %>%
+      summarise(
+        n=n(),
+        min = min(!!sym(aux)),
+        q1 = quantile(!!sym(aux),0.25),
+        median = quantile(!!sym(aux),0.50),
+        mean = mean(!!sym(aux)),
+        q3 = quantile(!!sym(aux),0.50),
+        max = max(!!sym(aux)),
+        sd = sd(!!sym(aux)),
+        cv = abs(sd/mean)
+  ))
+}
+
+dif_summary_positive<-tibble(stats=c("n","min","q1","median","mean","q3","max","sd","cv"),
+                                MAS=summary_vectors_positive$d_MAS,
+                                CC=summary_vectors_positive$d_CC,
+                                OTROS=summary_vectors_positive$d_OTROS,
+                                blancos=summary_vectors_positive$d_blancos,
+                                nulos=summary_vectors_positive$d_nulos)
+```
+
+```{r}
+summary_vectors_negative <- list()
+aux_names <-c("d_MAS","d_CC","d_OTROS","d_blancos","d_nulos")
+for(aux in aux_names){
+  summary_vectors_negative[[aux]] <- t(
+    actas_join_last_dif_clean_filter %>% 
+      filter(!!sym(aux)<0) %>%
+      select(aux) %>%
+      summarise(
+        n=n(),
+        min = min(!!sym(aux)),
+        q1 = quantile(!!sym(aux),0.25),
+        median = quantile(!!sym(aux),0.50),
+        mean = mean(!!sym(aux)),
+        q3 = quantile(!!sym(aux),0.50),
+        max = max(!!sym(aux)),
+        sd = sd(!!sym(aux)),
+        cv = abs(sd/mean)
+  ))
+}
+
+dif_summary_negative <- tibble(stats=c("n","min","q1","median","mean","q3","max","sd","cv"),
+                             MAS=summary_vectors_negative$d_MAS,
+                             CC=summary_vectors_negative$d_CC,
+                             OTROS=summary_vectors_negative$d_OTROS,
+                             blancos=summary_vectors_negative$d_blancos,
+                             nulos=summary_vectors_negative$d_nulos)
+```
+
+##### Dif. Positivas {-}
+
+```{r}
+dif_summary_positive
+```
+
+##### Dif. Negativas {-}
+
+```{r}
+dif_summary_negative
+```
+
+#### Diagramas de caja {- .tabset}
+
+##### Dif. Positivas {-}
+
+```{r fig.height=4.5, fig.width=10}
+grid.arrange(
+ggplot(actas_join_last_dif_clean_filter.melt %>% filter(dif>0),
+       aes(x="",y=dif,fill=grupo)) + 
+  geom_boxplot() +
+  facet_wrap(.~grupo, nrow = 1) +
+  theme(legend.position = "none"),
+ggplot(actas_join_last_dif_clean_filter.melt %>% filter(dif>0, dif<75),
+       aes(x="",y=dif,fill=grupo)) + 
+  geom_boxplot() +
+  facet_wrap(.~grupo, nrow = 1) +
+  theme(legend.position = "none"),
+ncol = 2
+) 
+```
+
+##### Dif. Negativas {-}
+
+```{r fig.height=4.5, fig.width=10}
+grid.arrange(
+ggplot(actas_join_last_dif_clean_filter.melt %>% filter(dif<0),
+       aes(x="",y=dif,fill=grupo)) + 
+  geom_boxplot() +
+  facet_wrap(.~grupo, nrow = 1) +
+  theme(legend.position = "none"),
+ggplot(actas_join_last_dif_clean_filter.melt %>% filter(dif<0, dif>-75),
+       aes(x="",y=dif,fill=grupo)) + 
+  geom_boxplot() +
+  facet_wrap(.~grupo, nrow = 1) +
+  theme(legend.position = "none"),
+ncol = 2
+)
+```
+
+#### Histogramas {- .tabset}
+
+##### Dif. Positivas {-}
+
+```{r fig.height=4.5, fig.width=10}
+ggplot(actas_join_last_dif_clean_filter.melt %>% filter(dif>0, dif<75),
+       aes(x=dif,fill=grupo)) + 
+  geom_histogram(aes(y = ..density..), bins=30) +
+  geom_line(aes(y = ..density..), stat = 'density', size = 1, colour = "darkblue") +
+  facet_wrap(.~grupo, nrow = 2, scales = "free_y") + 
+  theme(legend.position = "none")
+```
+
+##### Dif. Negativas {-}
+
+```{r fig.height=4.5, fig.width=10}
+ggplot(actas_join_last_dif_clean_filter.melt %>% filter(dif<0, dif>-75),
+       aes(x=dif,fill=grupo)) + 
+  geom_histogram(aes(y = ..density..), bins=30) +
+  geom_line(aes(y = ..density..), stat = 'density', size = 1, colour = "darkblue") +
+  facet_wrap(.~grupo, nrow = 2, scales = "free_y") + 
+  theme(legend.position = "none")
+```
+
+## Impacto de diferencias
+
+A continuación se muestra la sumatoria de las diferencias por tipo de voto.
+
+```{r}
+impact_summary <- actas_join_last_dif_clean_filter %>%
+  select(starts_with("d_")) %>%
+  summarise_all(sum)
+impact_summary
+```
+
+```{r fig.height=2, fig.width=5}
+ggplot(actas_join_last_dif_clean_filter %>%
+         select(starts_with("d_")) %>%
+         summarise_all(sum) %>% 
+         melt(value.name="count", id.vars=NULL),
+       aes(x=variable, y=count, fill=variable)) +
+  geom_bar(stat = "identity") +
+  theme(legend.position = "none")
+```
+
+## Simulación de escenarios {.tabset}
+
+### Escenario 1 {-}
+
+> Mantener las diferencias totales en los votos de CC y OTROS en los ultimos resultados oficiales y omitir cualquier cambio a los votos del MAS.
+
+```{r}
+actas_presidente_comp_db_last %>%
+  select(MAS, CC, OTROS) %>%
+  summarise_all(sum) %>%
+  melt(value.name="n_oficial", id.vars=NULL) %>%
+  mutate(
+    frec_oficial = n_oficial/sum(n_oficial),
+    sim_delta = c(-impact_summary$d_MAS, 0, -impact_summary$d_OTROS),
+    n_sim = n_oficial + sim_delta,
+    frec_sim = n_sim/sum(n_sim)
+  )
+```
+
+### Escenario 2 {-}
+
+> A nivel de actas, considerar únicamente diferencias negativas para el MAS y OTROS, mientras que para CC considerar únicamente diferencias positivas.
+
+```{r}
+impact_summary_last_sim <- actas_join_last_dif_clean_filter %>%
+  select(starts_with("d_")) %>%
+  mutate(
+    d_MAS = ifelse(d_MAS>0,0,d_MAS),
+    d_CC = ifelse(d_CC>0,d_CC,0),
+    d_OTROS = ifelse(d_OTROS>0,0,d_OTROS)
+  ) %>%
+  summarise_all(sum)
+```
+
+```{r}
+actas_presidente_comp_db_last %>%
+  select(MAS, CC, OTROS) %>%
+  summarise_all(sum) %>%
+  melt(value.name="n_oficial", id.vars=NULL) %>%
+  mutate(
+    frec_oficial = n_oficial/sum(n_oficial),
+    sim_delta = c(impact_summary_last_sim$d_MAS,
+                  impact_summary_last_sim$d_CC,
+                  impact_summary_last_sim$d_OTROS),
+    n_sim = n_oficial + sim_delta,
+    frec_sim = n_sim/sum(n_sim)
+  )
+```
