@@ -9,7 +9,7 @@ navbar:
       href: catalogo.html
   right:
     - icon: fa-github fa-lg
-      href: http://github.com/ayar-yps
+      href: http://github.com/ayar-yps/analisis_actas_elecciones2019_BO
     - icon: fa-twitter fa-lg
       href: https://twitter.com/ayar_paco
 output:
