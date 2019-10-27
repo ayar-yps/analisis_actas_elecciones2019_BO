@@ -1,10 +1,6 @@
 ---
 title: "Análisis de actas: Elecciones nacionales 2019 Bolivia"
 ---
-<style>
-body {
-text-align: justify}
-</style>
 
 Este sitio muestra un [__catálogo__](catalogo.html) de análisis de datos sobre las actas de las elecciones nacionales 2019 en Bolivia. Los datos fuente considerados provienen de las páginas web oficiales del Órgano Electoral Plurinacional y fueron proporcionados por el equipo de [Edgar Villegas](https://twitter.com/edgarinvillegas).
 
