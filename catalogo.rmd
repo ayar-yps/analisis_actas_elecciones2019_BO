@@ -10,3 +10,5 @@ A continuación el listado de análisis realizados a la fecha.
 
 * [Análisis 1](analisis_actas.nb.html): Análisis de diferencias entre datos de actas del TREP y el cómputo oficial. Se toman dos comparaciones: _TREP crítico vs último oficial_ y _Último TREP vs último oficial_
 
+* [Análisis 2](distribucion_diferencias.nb.html): Análisis de distribución de diferencias entre los datos del TREP y el cómputo oficial a nivel Bolivia vs extranjero, departamental y municipal. 
+

@@ -1,0 +1,682 @@
+---
+title: "Distribución de diferencias"
+output:
+  html_notebook:
+    number_sections: yes
+    theme: flatly
+    toc: yes
+    toc_float: yes
+---
+
+> [__VOLVER AL CATÁLOGO__](catalogo.html)
+
+```{r include=FALSE}
+# Setup
+
+# Packs
+library(readxl)
+library(dplyr)
+library(RSQLite)
+library(ggplot2)
+library(reshape2)
+library(gridExtra)
+library(rgdal)
+library(rgeos)
+library(RColorBrewer)
+
+# Chunks setup
+knitr::opts_chunk$set(echo=FALSE)
+options(crayon.enable=FALSE)
+
+# Read data
+con <- dbConnect(drv=RSQLite::SQLite(), dbname="data/DatosActasPorHora.db")
+
+actas_presidente_comp_raw <- dbReadTable(con, "ActasPresidenteComputo")
+actas_presidente_trep_raw <- dbReadTable(con, "ActasPresidenteTrep")
+```
+
+```{r}
+gen_analytics_db <- function(actas_presidente){
+  db <- actas_presidente %>%
+    rename(
+      fecha_hora = FechaHoraArchivo,
+      pais = Pais,
+      n_dep = NumeroDepartamento,
+      provincia = Provincia,
+      n_mun = NumeroMunicipio,
+      municipio = Municipio,
+      localidad = Localidad,
+      recinto = Recinto,
+      n_mesa = NumeroMesa,
+      cod_mesa = CodigoMesa,
+      eleccion = Eleccion,
+      inscritos = Inscritos,
+      v_validos = Validos,
+      blancos = Blancos,
+      nulos = Nulos,
+      estado_acta = Computada,
+      departamento = Departamento
+      ) %>%
+    mutate(
+      fecha_hora = as.POSIXct(fecha_hora, format = "%Y-%m-%d %H:%M:%S"),
+      OTROS = FPV + MTS + UCS + M21F + PDC + MNR + PanBol
+      ) %>%
+    select(
+      fecha_hora,
+      cod_mesa,
+      n_mesa,
+      pais,
+      departamento,
+      provincia,
+      municipio,
+      localidad,
+      recinto,
+      inscritos,
+      MAS,
+      CC,
+      OTROS,
+      blancos,
+      nulos,
+      estado_acta
+      ) %>%
+    arrange(
+      fecha_hora, cod_mesa
+    )
+  return(db)
+}
+```
+
+```{r}
+actas_presidente_trep_db <- gen_analytics_db(actas_presidente_trep_raw)
+actas_presidente_comp_db <- gen_analytics_db(actas_presidente_comp_raw)
+
+actas_presidente_trep_db_last <- actas_presidente_trep_db %>%
+  filter(fecha_hora == "2019-10-25 10:13:40")
+
+actas_presidente_comp_db_last <- actas_presidente_comp_db %>%
+  filter(fecha_hora == "2019-10-25 07:20:35")
+
+actas_join_last <- actas_presidente_comp_db_last %>%
+  select(
+    - fecha_hora
+  ) %>%
+  left_join(
+    actas_presidente_trep_db_last %>%
+      select(
+        cod_mesa,
+        MAS,
+        CC,
+        OTROS,
+        blancos,
+        nulos
+      ),
+    by = "cod_mesa", suffix = c(".comp",".trep")
+  )
+
+actas_join_last_dif <- actas_join_last %>%
+  mutate(
+    bo_ext = ifelse(pais == "Bolivia","Bolivia","Extranjero"),
+    d_MAS = MAS.comp - MAS.trep,
+    d_CC = CC.comp - CC.trep,
+    d_OTROS = OTROS.comp - OTROS.trep,
+    d_blancos = blancos.comp - blancos.trep,
+    d_nulos = nulos.comp - nulos.trep
+  ) %>%
+  select(
+    cod_mesa,
+    bo_ext, pais, departamento, provincia, municipio, localidad, recinto,
+    MAS.comp,CC.comp,OTROS.comp,blancos.comp,nulos.comp,
+    MAS.trep,CC.trep,OTROS.trep,blancos.trep,nulos.trep,
+    d_MAS,d_CC,d_OTROS,d_blancos,d_nulos
+  )
+```
+
+# Descripción
+
+El [Análisis 1](analisis_actas.nb.html) identifica diferencias sesgadas para más de una opción de voto entre los datos del TREP y el cómputo oficial. El presente estudio analiza la distribución de estas diferencias a nivel Bolivia vs Extranjero, departamental y municipal. Las diferencias analizadas corresponden a las existentes entre los datos del último TREP y el último computo oficial disponible en la base de datos.
+
+# Preparación de datos
+
+## Datos iniciales
+
+```{r}
+actas_join_last_dif %>% glimpse()
+```
+
+## Datos faltantes
+
+```{r}
+actas_join_last_dif %>% 
+  mutate_at(-1,~ifelse(is.na(.),1,0)) %>%
+  summarise_at(-1,~sum(.)) %>%
+  glimpse()
+```
+
+```{r}
+actas_join_last_dif_clean <- actas_join_last_dif %>% na.omit()
+
+actas_join_last_dif_clean.melt <- 
+  melt(
+    actas_join_last_dif_clean %>% 
+      select(cod_mesa, bo_ext, departamento, municipio, starts_with("d_")),
+    id = c("cod_mesa","bo_ext","departamento","municipio"),
+    variable.name = "grupo",
+    value.name = "dif"
+  )
+```
+
+## Datos de análisis
+
+```{r}
+actas_join_last_dif_clean %>% glimpse()
+```
+
+# Diferencias Bolivia vs Extranjero
+
+## Frecuencia relativa 
+
+```{r}
+dif_por_bo_ext <- actas_join_last_dif_clean %>%
+  group_by(bo_ext) %>%
+  mutate(
+    any_dif = ifelse(abs(d_MAS) + abs(d_CC) + abs(d_OTROS) + abs(d_blancos) + abs(d_nulos) > 0, 1, 0)
+  ) %>%
+  summarise(
+    n_actas = n(),
+    n_dif = sum(any_dif)
+    ) %>%
+  mutate(
+    frec_dif = n_dif/n_actas
+  )
+dif_por_bo_ext
+```
+
+```{r fig.width=8, fig.height=2}
+ggplot(dif_por_bo_ext, aes(x=reorder(bo_ext, frec_dif), y=frec_dif)) + 
+  geom_bar(stat = "identity") + coord_flip() + xlab("bo_ext")
+```
+
+## Distribución de signos
+
+```{r}
+dif_por_bo_ext_opv <- actas_join_last_dif_clean.melt %>% 
+  group_by(bo_ext, grupo) %>%
+  summarise(
+    n_dif = sum(ifelse(dif!=0,1,0)),
+    n_dif_pos = sum(ifelse(dif>0,1,0)),
+    frec_dif_pos = n_dif_pos/n_dif,
+    n_dif_neg = sum(ifelse(dif<0,1,0)),
+    frec_dif_neg = n_dif_neg/n_dif
+    )
+dif_por_bo_ext_opv 
+```
+
+```{r fig.height=2.5, fig.width=10}
+ggplot(dif_por_bo_ext_opv  %>% 
+         select(bo_ext, grupo, n_dif_pos, n_dif_neg) %>%
+         melt(id = c("grupo","bo_ext"),
+              variable.name = "signo",
+              value.name = "n") %>% 
+         group_by(bo_ext, grupo) %>%
+         mutate(frec = n/sum(n)),
+       aes(x=signo, y=frec, fill = grupo)
+       ) + ylim(0,1) +
+  geom_bar(stat = "identity") + coord_flip() +
+  geom_label(aes(label = round(n)), size=3.5)+
+  facet_wrap(interaction(grupo, bo_ext)~., ncol = 5) +
+  theme(legend.position = "none")
+```
+
+## Distribución de diferencias {.tabset}
+
+### Con límites {-}
+
+__dif!=0 ^ abs(dif) < 75__
+
+```{r}
+actas_join_last_dif_clean.melt %>% 
+  filter(dif != 0, abs(dif)<75) %>%
+  group_by(bo_ext, grupo) %>%
+  summarise(
+    n=n(),
+    min = min(dif),
+    q1 = quantile(dif,0.25),
+    median = quantile(dif,0.5),
+    mean = mean(dif),
+    q3 = quantile(dif,0.75),
+    max = max(dif),
+    sd = sd(dif),
+    cv = abs(sd/mean)
+    )
+```
+
+```{r fig.height=2.5, fig.width=10}
+ggplot(actas_join_last_dif_clean.melt %>%
+         filter(dif != 0, abs(dif)<75),
+       aes(x="", y=dif, fill = grupo)
+       ) +
+  geom_boxplot() + coord_flip() + 
+  facet_wrap(interaction(grupo, bo_ext)~., ncol = 5) +
+  theme(legend.position = "none")
+```
+
+### Sin límites {-}
+
+__dif!=0__
+
+```{r}
+actas_join_last_dif_clean.melt %>% 
+  filter(dif != 0) %>%
+  group_by(bo_ext, grupo) %>%
+  summarise(
+    n=n(),
+    min = min(dif),
+    q1 = quantile(dif,0.25),
+    median = quantile(dif,0.5),
+    mean = mean(dif),
+    q3 = quantile(dif,0.75),
+    max = max(dif),
+    sd = sd(dif),
+    cv = abs(sd/mean)
+    )
+```
+
+```{r fig.height=2.5, fig.width=10}
+ggplot(actas_join_last_dif_clean.melt %>%
+         filter(dif != 0),
+       aes(x="", y=dif, fill = grupo)
+       ) +
+  geom_boxplot() + coord_flip() + 
+  facet_wrap(interaction(grupo, bo_ext)~., ncol = 5) +
+  theme(legend.position = "none")
+```
+
+# Diferencias por departamento
+
+## Frecuencia relativa
+
+```{r}
+dif_por_dep <- actas_join_last_dif_clean %>%
+  filter(bo_ext == "Bolivia") %>% 
+  group_by(departamento) %>%
+  mutate(
+    any_dif = ifelse(abs(d_MAS) + abs(d_CC) + abs(d_OTROS) + abs(d_blancos) + abs(d_nulos) > 0, 1, 0)
+  ) %>%
+  summarise(
+    n_mesas = n(),
+    n_dif = sum(any_dif)
+    ) %>%
+  mutate(
+    frec_dif = n_dif/n_mesas
+  ) %>%
+  arrange(-frec_dif)
+
+dif_por_dep 
+```
+
+```{r fig.width=8, fig.height=3}
+ggplot(dif_por_dep, aes(x=reorder(departamento, frec_dif), y=frec_dif)) + 
+  geom_bar(stat = "identity") + coord_flip() + xlab("departamento")
+```
+
+## Distribución de signos
+
+```{r}
+dif_por_dep_opv <- actas_join_last_dif_clean.melt %>% 
+  filter(bo_ext == "Bolivia") %>%
+  group_by(departamento, grupo) %>%
+  summarise(
+    n_dif = sum(ifelse(dif!=0,1,0)),
+    n_dif_pos = sum(ifelse(dif>0,1,0)),
+    frec_dif_pos = n_dif_pos/n_dif,
+    n_dif_neg = sum(ifelse(dif<0,1,0)),
+    frec_dif_neg = n_dif_neg/n_dif
+    )
+dif_por_dep_opv 
+```
+
+```{r fig.height=7, fig.width=10}
+ggplot(dif_por_dep_opv %>% 
+         select(departamento, grupo, n_dif_pos, n_dif_neg) %>%
+         melt(id = c("grupo","departamento"),
+              variable.name = "signo",
+              value.name = "n") %>% 
+         group_by(departamento, grupo) %>%
+         mutate(frec = n/sum(n)),
+       aes(x=signo, y=frec, fill = grupo)
+       ) +
+  geom_bar(stat = "identity") + coord_flip() +
+  geom_label(aes(label = round(n)), size=3)+
+  facet_wrap(interaction(grupo, departamento)~., ncol = 5) +
+  theme(legend.position = "none")
+```
+
+## Distribución de diferencias
+
+```{r}
+actas_join_last_dif_clean.melt %>% 
+  filter(bo_ext == "Bolivia", dif != 0, abs(dif)<75) %>%
+  group_by(departamento, grupo) %>%
+  summarise(
+    n=n(),
+    min = min(dif),
+    q1 = quantile(dif,0.25),
+    median = quantile(dif,0.5),
+    mean = mean(dif),
+    q3 = quantile(dif,0.75),
+    max = max(dif),
+    sd = sd(dif),
+    cv = abs(sd/mean)
+    )
+```
+
+```{r fig.height=7, fig.width=10}
+ggplot(actas_join_last_dif_clean.melt %>%
+         filter(bo_ext == "Bolivia", dif != 0, abs(dif)<75),
+       aes(x="", y=dif, fill = grupo)
+       ) +
+  geom_boxplot() + coord_flip() + 
+  facet_wrap(interaction(grupo, departamento)~., ncol = 5) +
+  theme(legend.position = "none")
+```
+
+# Diferencias por municipio
+
+## Frecuencia relativa
+
+```{r}
+dif_por_mun <- actas_join_last_dif_clean %>%
+  filter(bo_ext == "Bolivia") %>% 
+  group_by(departamento, municipio) %>%
+  mutate(
+    any_dif = ifelse(abs(d_MAS) + abs(d_CC) + abs(d_OTROS) + abs(d_blancos) + abs(d_nulos) > 0, 1, 0)
+  ) %>%
+  summarise(
+    n_mesas = n(),
+    n_dif = sum(any_dif)
+    ) %>%
+  mutate(
+    frec_dif = n_dif/n_mesas
+  ) %>%
+  arrange(-frec_dif) 
+
+dif_por_mun%>%
+  filter(n_dif>0)
+```
+
+```{r include=FALSE}
+municipios_shp <- readOGR(dsn = "data/municipio_geo/municipio_geo.shp",
+                          stringsAsFactors = F, 
+                          use_iconv = TRUE, encoding = "UTF-8")
+
+municipios_shp@data$id <- rownames(municipios_shp@data)
+municipios_shp.df <- as.data.frame(municipios_shp)
+municipios_shp.fort <- fortify(municipios_shp, region="id")
+municipios_shp.line <-  municipios_shp.fort %>% 
+  left_join(municipios_shp.df, by="id")
+```
+
+```{r}
+municipios_shp.dif_por_mun <- municipios_shp.line %>% 
+  left_join(
+    dif_por_mun %>%
+      select(departamento, municipio, frec_dif),
+    by = c("DEPARTAMEN"="departamento","MUNICIPIO"="municipio")
+    )
+```
+
+
+```{r}
+ggplot(data = municipios_shp.dif_por_mun, aes(x = long, y = lat)) + 
+  geom_polygon(aes(fill = frec_dif, group=id), colour = "black" ) +
+  scale_fill_gradientn(colours = c("white", "Red")) +
+  coord_equal()
+```
+
+## Distribución de signos {.tabset}
+
+```{r}
+dif_por_mun_opv <- actas_join_last_dif_clean.melt %>% 
+  filter(bo_ext == "Bolivia") %>%
+  group_by(departamento, municipio, grupo) %>%
+  summarise(
+    n_dif = sum(ifelse(dif!=0,1,0)),
+    n_dif_pos = sum(ifelse(dif>0,1,0)),
+    frec_dif_pos = n_dif_pos/n_dif,
+    n_dif_neg = sum(ifelse(dif<0,1,0)),
+    frec_dif_neg = n_dif_neg/n_dif
+    )
+dif_por_mun_opv
+```
+
+```{r}
+municipios_shp.dif_por_mun_opv <- municipios_shp.line %>% 
+  left_join(
+    dif_por_mun_opv %>%
+      select(departamento, municipio, grupo, frec_dif_pos),
+    by = c("DEPARTAMEN"="departamento","MUNICIPIO"="municipio")
+    )
+```
+
+### MAS {-}
+
+```{r}
+ggplot(data = municipios_shp.dif_por_mun_opv %>%
+         filter(grupo=="d_MAS"|is.na(grupo)),
+       aes(x = long, y = lat)) + 
+  geom_polygon(aes(fill = frec_dif_pos, group=id), colour = "black" ) +
+  scale_fill_gradientn(colours = c("red","white","green")) +
+  coord_equal() 
+```
+
+### CC {-}
+
+```{r}
+ggplot(data = municipios_shp.dif_por_mun_opv %>%
+         filter(grupo=="d_CC"|is.na(grupo)),
+       aes(x = long, y = lat)) + 
+  geom_polygon(aes(fill = frec_dif_pos, group=id), colour = "black" ) +
+  scale_fill_gradientn(colours = c("red","white","green")) +
+  coord_equal() 
+```
+
+### OTROS {-}
+
+```{r}
+ggplot(data = municipios_shp.dif_por_mun_opv %>%
+         filter(grupo=="d_OTROS"|is.na(grupo)),
+       aes(x = long, y = lat)) + 
+  geom_polygon(aes(fill = frec_dif_pos, group=id), colour = "black" ) +
+  scale_fill_gradientn(colours = c("red","white","green")) +
+  coord_equal() 
+```
+
+### blancos {-}
+
+```{r}
+ggplot(data = municipios_shp.dif_por_mun_opv %>%
+         filter(grupo=="d_blancos"|is.na(grupo)),
+       aes(x = long, y = lat)) + 
+  geom_polygon(aes(fill = frec_dif_pos, group=id), colour = "black" ) +
+  scale_fill_gradientn(colours = c("red","white","green")) +
+  coord_equal() 
+```
+
+### nulos {-}
+
+```{r}
+ggplot(data = municipios_shp.dif_por_mun_opv %>%
+         filter(grupo=="d_nulos"|is.na(grupo)),
+       aes(x = long, y = lat)) + 
+  geom_polygon(aes(fill = frec_dif_pos, group=id), colour = "black" ) +
+  scale_fill_gradientn(colours = c("red","white","green")) +
+  coord_equal() 
+```
+
+
+## Distribución de diferencias {.tabset}
+
+### Con límites {- .tabset}
+
+__dif!=0 ^ abs(dif) < 75__
+
+```{r}
+actas_join_last_dif_clean.melt %>% 
+      filter(bo_ext == "Bolivia") %>%
+      select(departamento, municipio, grupo, dif) %>%
+      mutate(dif=ifelse(dif!=0 & abs(dif)<75, dif, NA)) %>%
+      group_by(departamento, municipio, grupo) %>%
+      summarise(mean_dif = mean(dif, na.rm=T)) %>%
+      filter(!is.na(mean_dif))
+```
+
+```{r}
+municipios_shp.dif_por_mun_opv.melt <- municipios_shp.line %>% 
+  left_join(
+    actas_join_last_dif_clean.melt %>% 
+      filter(bo_ext == "Bolivia") %>%
+      select(departamento, municipio, grupo, dif) %>%
+      mutate(dif=ifelse(dif!=0 & abs(dif)<75, dif, NA)) %>%
+      group_by(departamento, municipio, grupo) %>%
+      summarise(mean_dif = mean(dif, na.rm=T)),
+    by = c("DEPARTAMEN"="departamento","MUNICIPIO"="municipio")
+    )
+```
+
+#### MAS {-}
+
+```{r}
+ggplot(data = municipios_shp.dif_por_mun_opv.melt %>%
+         filter(grupo=="d_MAS"|is.na(grupo)),
+       aes(x = long, y = lat)) + 
+  geom_polygon(aes(fill = mean_dif, group=id), colour = "black" ) +
+  scale_fill_gradientn(colours = c("red","white","green"), limits = c(-75,75)) +
+  coord_equal() 
+```
+
+#### CC {-}
+
+```{r}
+ggplot(data = municipios_shp.dif_por_mun_opv.melt %>%
+         filter(grupo=="d_CC"|is.na(grupo)),
+       aes(x = long, y = lat)) + 
+  geom_polygon(aes(fill = mean_dif, group=id), colour = "black" ) +
+  scale_fill_gradientn(colours = c("red","white","green"), limits = c(-75,75)) +
+  coord_equal() 
+```
+
+#### OTROS {-}
+
+```{r}
+ggplot(data = municipios_shp.dif_por_mun_opv.melt %>%
+         filter(grupo=="d_OTROS"|is.na(grupo)),
+       aes(x = long, y = lat)) + 
+  geom_polygon(aes(fill = mean_dif, group=id), colour = "black" ) +
+  scale_fill_gradientn(colours = c("red","white","green"), limits = c(-75,75)) +
+  coord_equal() 
+```
+
+#### blancos {-}
+
+```{r}
+ggplot(data = municipios_shp.dif_por_mun_opv.melt %>%
+         filter(grupo=="d_blancos"|is.na(grupo)),
+       aes(x = long, y = lat)) + 
+  geom_polygon(aes(fill = mean_dif, group=id), colour = "black" ) +
+  scale_fill_gradientn(colours = c("red","white","green"), limits = c(-75,75)) +
+  coord_equal() 
+```
+
+#### nulos {-}
+
+```{r}
+ggplot(data = municipios_shp.dif_por_mun_opv.melt %>%
+         filter(grupo=="d_nulos"|is.na(grupo)),
+       aes(x = long, y = lat)) + 
+  geom_polygon(aes(fill = mean_dif, group=id), colour = "black" ) +
+  scale_fill_gradientn(colours = c("red","white","green"), limits = c(-75,75)) +
+  coord_equal() 
+```
+
+
+### Sin límites {- .tabset}
+
+__dif!=0__
+
+```{r}
+actas_join_last_dif_clean.melt %>% 
+      filter(bo_ext == "Bolivia") %>%
+      select(departamento, municipio, grupo, dif) %>%
+      mutate(dif=ifelse(dif!=0, dif, NA)) %>%
+      group_by(departamento, municipio, grupo) %>%
+      summarise(mean_dif = mean(dif, na.rm=T)) %>%
+      filter(!is.na(mean_dif))
+```
+
+```{r}
+municipios_shp.dif_por_mun_opv.melt.slim <- municipios_shp.line %>% 
+  left_join(
+    actas_join_last_dif_clean.melt %>% 
+      filter(bo_ext == "Bolivia") %>%
+      select(departamento, municipio, grupo, dif) %>%
+      mutate(dif=ifelse(dif!=0, dif, NA)) %>%
+      group_by(departamento, municipio, grupo) %>%
+      summarise(mean_dif = mean(dif, na.rm=T)),
+    by = c("DEPARTAMEN"="departamento","MUNICIPIO"="municipio")
+    )
+```
+
+#### MAS {-}
+
+```{r}
+ggplot(data = municipios_shp.dif_por_mun_opv.melt.slim %>%
+         filter(grupo=="d_MAS"|is.na(grupo)),
+       aes(x = long, y = lat)) + 
+  geom_polygon(aes(fill = mean_dif, group=id), colour = "black" ) +
+  scale_fill_gradientn(colours = c("red","white","green"), limits = c(-220,220)) +
+  coord_equal() 
+```
+
+#### CC {-}
+
+```{r}
+ggplot(data = municipios_shp.dif_por_mun_opv.melt.slim %>%
+         filter(grupo=="d_CC"|is.na(grupo)),
+       aes(x = long, y = lat)) + 
+  geom_polygon(aes(fill = mean_dif, group=id), colour = "black" ) +
+  scale_fill_gradientn(colours = c("red","white","green"), limits = c(-220,220)) +
+  coord_equal() 
+```
+
+#### OTROS {-}
+
+```{r}
+ggplot(data = municipios_shp.dif_por_mun_opv.melt.slim %>%
+         filter(grupo=="d_OTROS"|is.na(grupo)),
+       aes(x = long, y = lat)) + 
+  geom_polygon(aes(fill = mean_dif, group=id), colour = "black" ) +
+  scale_fill_gradientn(colours = c("red","white","green"), limits = c(-220,220)) +
+  coord_equal() 
+```
+
+#### blancos {-}
+
+```{r}
+ggplot(data = municipios_shp.dif_por_mun_opv.melt.slim %>%
+         filter(grupo=="d_blancos"|is.na(grupo)),
+       aes(x = long, y = lat)) + 
+  geom_polygon(aes(fill = mean_dif, group=id), colour = "black" ) +
+  scale_fill_gradientn(colours = c("red","white","green"), limits = c(-220,220)) +
+  coord_equal() 
+```
+
+#### nulos {-}
+
+```{r}
+ggplot(data = municipios_shp.dif_por_mun_opv.melt.slim %>%
+         filter(grupo=="d_nulos"|is.na(grupo)),
+       aes(x = long, y = lat)) + 
+  geom_polygon(aes(fill = mean_dif, group=id), colour = "black" ) +
+  scale_fill_gradientn(colours = c("red","white","green"), limits = c(-220,220)) +
+  coord_equal() 
+```
